@@ -1,3 +1,4 @@
+from collections import Counter
 import streamlit as st
 import numpy as np
 import itertools
@@ -37,13 +38,11 @@ products = [
     {"id": "30mm-9", "L": 9, "T": 30.0}
 ]
 
+# Veneer options
 veneer_options = np.round(np.arange(min_thickness, max_thickness + 0.0001, increment), 2).tolist()
 
-# If user checks the box, include 2.65 in the list
 if include_265 and 2.65 not in veneer_options:
-    veneer_options.insert(1, 2.65)  # insert it in a sensible spot
-
-# Or if unchecked, make sure it's not in the list
+    veneer_options.insert(1, 2.65)
 elif not include_265 and 2.65 in veneer_options:
     veneer_options.remove(2.65)
 
@@ -91,14 +90,43 @@ def veneer_stats(veneers):
         "std": np.std(arr)
     }
 
+# ✅ NEW FUNCTION — check if mirroring is possible
+def is_mirrorable(stack):
+    counts = Counter(stack)
+    return sum(c % 2 for c in counts.values()) <= 1
+
+# ✅ REVISED MIRROR FUNCTION
 def make_stack_mirrored(stack):
     L = len(stack)
-    half_len = L // 2
-    middle_len = L % 2
-    # Keep the first half, mirror it
-    first_half = stack[:half_len]
-    mirrored_stack = first_half + ([stack[half_len]] if middle_len else []) + first_half[::-1]
-    return mirrored_stack
+    cnt = Counter(stack)
+
+    # If not mirrorable, just return the original
+    if not is_mirrorable(stack):
+        return stack.copy()
+
+    # Determine middle if odd length
+    middle = None
+    if L % 2 == 1:
+        odd_items = [t for t, c in cnt.items() if c % 2 == 1]
+        if odd_items:
+            middle = sorted(odd_items)[0]
+            cnt[middle] -= 1
+            if cnt[middle] == 0:
+                del cnt[middle]
+
+    # Build first half
+    first_half = []
+    for thickness in sorted(cnt.keys()):
+        take = cnt[thickness] // 2
+        first_half.extend([thickness] * take)
+
+    # Construct mirrored stack
+    if middle is None:
+        mirrored = first_half + list(reversed(first_half))
+    else:
+        mirrored = first_half + [middle] + list(reversed(first_half))
+
+    return mirrored
 
 # ==========================================
 # PAGE 1: SOLVER
@@ -145,6 +173,8 @@ if page == "Solver":
         for pid, info in gset["stacks"].items():
             original_stack = info["stack"]
             adjusted_stack = move_thinnest_to_faces(original_stack)
+            if mirrored_construction and is_mirrorable(adjusted_stack):
+                adjusted_stack = make_stack_mirrored(adjusted_stack)
             adjusted_stacks[pid] = {
                 "original": original_stack,
                 "adjusted": adjusted_stack,
@@ -158,24 +188,15 @@ if page == "Solver":
 
     st.subheader("🧮 Global Solutions")
 
-    # ✅ Display the mirrored solutions
-
     display_solutions = adjusted_global_sets.copy()
 
-    # Step 1: Apply mirrored layup if checkbox is checked
-    if mirrored_construction:
-        for vg in display_solutions:
-            for pid, info in vg["stacks"].items():
-                info["adjusted"] = make_stack_mirrored(info["adjusted"])
-
-    # Step 2: Filter for 2.65 mm if checkbox is checked
+    # Filter 2.65 mm veneer option
     if include_265:
         display_solutions = [
             s for s in display_solutions
             if any(abs(round(v, 2) - 2.65) < 1e-8 for v in s["veneers"])
         ]
 
-    # Step 3: Display solutions
     if len(display_solutions) == 0:
         st.warning("⚠️ No solutions found for the selected options.")
     else:
@@ -187,15 +208,32 @@ if page == "Solver":
         )
 
         for i, vg in enumerate(display_solutions[:num_to_show], 1):
-
             recoveries = []
+            mirrorable_products = []
+            non_mirrorable_products = []
+
             for pid, info in vg["stacks"].items():
-                raw_layup = sum(info["adjusted"])  # use mirrored if applied
+                raw_layup = sum(info["adjusted"])
                 recovery = info["final"] / raw_layup * 100
                 recoveries.append(recovery)
+
+                # check mirrorability per product
+                if is_mirrorable(info["adjusted"]):
+                    mirrorable_products.append(pid)
+                else:
+                    non_mirrorable_products.append(pid)
+
             avg_recovery = round(np.mean(recoveries), 2)
 
-            with st.expander(f"Solution {i}: Veneers {vg['veneers']} | Avg Recovery: {avg_recovery}%"):
+            # Overall solution mirrorable if all products are mirrorable
+            solution_mirrorable = "✅" if len(non_mirrorable_products) == 0 else "❌"
+
+            with st.expander(
+                f"Solution {i}: Veneers {vg['veneers']} | Avg Recovery: {avg_recovery}% | Mirrorable: {solution_mirrorable}"
+            ):
+                st.write(f"Mirrorable products: {', '.join(mirrorable_products) if mirrorable_products else 'None'}")
+                st.write(f"Non-mirrorable products: {', '.join(non_mirrorable_products) if non_mirrorable_products else 'None'}")
+
                 for pid, info in vg["stacks"].items():
                     st.write(f"**{pid}**")
                     st.write(
@@ -203,39 +241,7 @@ if page == "Solver":
                         f"| Sanding: {info['sanding']} mm | Final: {info['final']} mm"
                     )
 
-    # Store in session state
     st.session_state["adjusted_global_sets"] = adjusted_global_sets
-
-
-    # # ✅ Optional post-filter: if checkbox checked, show only solutions that contain 2.65
-    # display_solutions = adjusted_global_sets
-    # if include_265:
-    #     display_solutions = [
-    #         s for s in adjusted_global_sets
-    #         if any(abs(round(v, 2) - 2.65) < 1e-8 for v in s["veneers"])
-    #     ]
-
-    # if len(display_solutions) == 0:
-    #     st.warning("⚠️ No solutions found that include 2.65 mm.")
-    # else:
-    #     num_to_show = st.slider(
-    #         "Number of solutions to display",
-    #         1,
-    #         min(len(display_solutions), 50),
-    #         5
-    #     )
-
-    #     for i, vg in enumerate(display_solutions[:num_to_show], 1):
-    #         with st.expander(f"Solution {i}: Veneers {vg['veneers']}"):
-    #             for pid, info in vg["stacks"].items():
-    #                 st.write(f"**{pid}**")
-    #                 st.write(
-    #                     f"Before: {info['original']} → After: {info['adjusted']} "
-    #                     f"| Sanding: {info['sanding']} mm | Final: {info['final']} mm"
-    #                 )
-
-    # # Store in session state
-    # st.session_state["adjusted_global_sets"] = adjusted_global_sets
 
 # ==========================================
 # PAGE 2: EXPLORATORY
@@ -247,7 +253,6 @@ elif page == "Exploratory":
     else:
         adjusted_global_sets = st.session_state["adjusted_global_sets"]
 
-        # Compute stats for each solution
         exploratory_solutions = []
         for g in adjusted_global_sets:
             stats = veneer_stats(g["veneers"])
@@ -290,7 +295,7 @@ elif page == "Exploratory":
 # ==========================================
 # PAGE 3: OPTIMISER
 # ==========================================
-if page == "Optimiser":
+elif page == "Optimiser":
     st.title("🌲 Layup to Sanding Optimiser")
     st.write("Find the layup construction that minimises recovery from layup to final product.")
 
@@ -299,14 +304,13 @@ if page == "Optimiser":
     else:
         adjusted_global_sets = st.session_state["adjusted_global_sets"]
 
-        # Filter solutions
         filtered_solutions = adjusted_global_sets
 
+        # Filter mirrorable only if checkbox is ticked
         if mirrored_construction:
             filtered_solutions = [
                 s for s in filtered_solutions
-                if all(info["adjusted"] == move_thinnest_to_faces(info["adjusted"])
-                       for info in s["stacks"].values())
+                if all(is_mirrorable(info["adjusted"]) for info in s["stacks"].values())
             ]
 
         if include_265:
@@ -318,7 +322,6 @@ if page == "Optimiser":
         if not filtered_solutions:
             st.warning("⚠️ No solutions meet the selected criteria.")
         else:
-            # Compute recovery for each solution
             solution_recoveries = []
             for s in filtered_solutions:
                 recoveries = []
@@ -330,7 +333,6 @@ if page == "Optimiser":
                 avg_recovery = np.mean(recoveries)
                 solution_recoveries.append({**s, "avg_recovery": avg_recovery})
 
-            # Pick solution with minimum recovery
             best_solution = min(solution_recoveries, key=lambda x: x["avg_recovery"])
 
             st.subheader("🏆 Optimal Solution")
