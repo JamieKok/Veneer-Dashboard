@@ -7,7 +7,33 @@ import time
 # ==========================================
 # PAGES
 # ==========================================
-page = st.sidebar.radio("📄 Pages", ["Solver", "Exploratory", "Optimiser"])
+page = st.sidebar.radio("📄 Pages", ["Solver", "Exploratory", "Optimiser", "Custom Veneer Set"])
+
+
+products = [
+    {"id": "9mm-5", "L": 5, "T": 9.0, "tol": 0.05},
+    {"id": "12mm-5", "L": 5, "T": 12.0, "tol": 0.08},
+    {"id": "15mm-5", "L": 7, "T": 15.0, "tol": 0.10},
+    {"id": "18mm-7", "L": 7, "T": 18.0, "tol": 0.12},
+    {"id": "21mm-7", "L": 7, "T": 21.0, "tol": 0.10},
+    {"id": "25mm-9", "L": 9, "T": 25.0, "tol": 0.15},
+    {"id": "30mm-9", "L": 9, "T": 30.0, "tol": 0.15}
+]
+
+# ==========================================
+# PRODUCT SELECTION
+# ==========================================
+st.sidebar.title("🧮 Produuct Selection")
+
+selected_products = []
+for p in products:
+    if st.sidebar.checkbox(f"{p['id']}", value=True):
+        selected_products.append(p['id'])
+
+active_products = [p for p in products if p['id'] in selected_products]
+
+# Save to session state so other pages can access
+st.session_state["active_products"] = active_products
 
 # ==========================================
 # SIDEBAR INPUTS
@@ -24,19 +50,9 @@ increment = st.sidebar.number_input("Thickness increment (mm)", 0.01, 1.0, 0.05,
 compression_factor = st.sidebar.slider("Compression factor", 0.00, 0.20, 0.06, 0.01)
 sanding_min = st.sidebar.slider("Sanding min (mm)", 0.0, 2.0, 0.75, 0.05)
 sanding_max = st.sidebar.slider("Sanding max (mm)", 0.0, 2.0, 1.0, 0.05)
-sanding_step = st.sidebar.slider("Sanding step (mm)", 0.01, 1.0, 0.05, 0.01)
-tolerance = st.sidebar.slider("Tolerance (mm)", 0.00, 0.20, 0.05, 0.01)
+sanding_step = st.sidebar.slider("Sanding step (mm)", 0.01, 1.0, 0.01, 0.01)
+tolerance = st.sidebar.slider("Tolerance (mm)", 0.00, 1.5, 0.05, 0.01)
 
-# Product setup
-products = [
-    {"id": "9mm-5", "L": 5, "T": 9.0},
-    {"id": "12mm-5", "L": 5, "T": 12.0},
-    {"id": "15mm-5", "L": 5, "T": 15.0},
-    {"id": "18mm-7", "L": 7, "T": 18.0},
-    {"id": "21mm-7", "L": 7, "T": 21.0},
-    {"id": "25mm-9", "L": 9, "T": 25.0},
-    {"id": "30mm-9", "L": 9, "T": 30.0}
-]
 
 # Veneer options
 veneer_options = np.round(np.arange(min_thickness, max_thickness + 0.0001, increment), 2).tolist()
@@ -145,7 +161,7 @@ if page == "Solver":
         all_feasible = True
         stacks_per_product = {}
 
-        for p in products:
+        for p in active_products:
             stack, sanding, final = find_feasible_stack(p["L"], p["T"], cset)
             if stack is None:
                 all_feasible = False
@@ -346,3 +362,82 @@ elif page == "Optimiser":
                     raw_layup = sum(info["adjusted"])
                     recovery = info["final"] / raw_layup * 100
                     st.write(f"Recovery: {recovery:.2f} %")
+
+# ==========================================
+# PAGE 4: CUSTOM THICKNESSES
+# ==========================================
+if page == "Custom Veneer Set":
+    st.title("🧩 Custom Veneer Thickness Check")
+    st.write("Enter 3 thicknesses and see which products can be made — including mirrored layups — with sanding, final thickness, and recovery.")
+
+    # User inputs for 3 thicknesses
+    t1 = st.number_input("Veneer thickness 1 (mm)", min_value=1.0, max_value=10.0, value=2.0, step=0.05)
+    t2 = st.number_input("Veneer thickness 2 (mm)", min_value=1.0, max_value=10.0, value=2.65, step=0.05)
+    t3 = st.number_input("Veneer thickness 3 (mm)", min_value=1.0, max_value=10.0, value=3.85, step=0.05)
+
+    thicknesses = [t1, t2, t3]
+    mirror_option = st.checkbox("🔁 Include mirrored layups", value=True)
+
+    if "active_products" not in st.session_state or not st.session_state["active_products"]:
+        st.warning("⚠️ Please select at least one product on the sidebar.")
+    else:
+        active_products = st.session_state["active_products"]
+
+        best_stacks = []
+        for product in active_products:
+            L = product["L"]
+            T = product["T"]
+            product_id = product["id"]
+
+            # check all combinations
+            feasible_stacks = []
+            for stack in itertools.combinations_with_replacement(thicknesses, L):
+                feasible, sanding, final = feasible_with_sanding(stack, T)
+                if feasible:
+                    recovery = final / sum(stack) * 100
+                    feasible_stacks.append({
+                        "stack": stack,
+                        "sanding": round(sanding, 2),
+                        "final": round(final, 2),
+                        "recovery": round(recovery, 2),
+                        "type": "Normal"
+                    })
+
+            if not feasible_stacks:
+                st.warning(f"No feasible stacks found for {product_id} with the selected thicknesses.")
+                continue
+
+            # pick the one with highest recovery
+            best_fs = max(feasible_stacks, key=lambda x: x["recovery"])
+            best_stacks.append(best_fs)
+
+            # display product result
+            st.subheader(f"Product: {product_id} | Target: {T} mm")
+            layup_str = " + ".join([f"{t:.2f}" for t in best_fs['stack']])
+
+            if mirror_option:
+                stack = list(best_fs['stack'])
+                n = len(stack)
+                if n % 2 == 1:  # odd-length
+                    mid_idx = n // 2
+                    mirrored = stack[:mid_idx] + [stack[mid_idx]] + stack[:mid_idx][::-1]
+                else:
+                    mirrored = stack[:n//2] + stack[:n//2][::-1]
+
+                mirrored_str = " + ".join([f"{t:.2f}" for t in mirrored])
+
+                st.write(
+                    f"**{best_fs['type']}** layup: {layup_str}  \n"
+                    f"**Mirrored display:** {mirrored_str}  \n"
+                    f"Sanding: {best_fs['sanding']} mm | Final: {best_fs['final']} mm | Recovery: {best_fs['recovery']} %"
+                )
+            else:
+                st.write(
+                    f"**{best_fs['type']}** layup: {layup_str}  \n"
+                    f"Sanding: {best_fs['sanding']} mm | Final: {best_fs['final']} mm | Recovery: {best_fs['recovery']} %"
+                )
+
+        # calculate average recovery over all products
+        if best_stacks:
+            avg_recovery = round(np.mean([fs['recovery'] for fs in best_stacks]), 2)
+            st.subheader(f"Average Recovery over all products: {avg_recovery} %")
